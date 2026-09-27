@@ -1,95 +1,166 @@
-// LM & PANDA - Status automático das lives
-// O arquivo live-status.json é atualizado automaticamente pelo GitHub Actions.
+name: Atualizar status das lives
 
-const YOUTUBE_LIVE_URL = "https://www.youtube.com/@lmreicaryt/live";
-const LIVE_STATUS_URL = `live-status.json?v=${Date.now()}`;
-const FALLBACK_STATUS = {
-  live: false,
-  game: null,
-  title: null,
-  videoId: null
-};
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
 
-function updateLiveGameStatus(data) {
-  const liveGame = data?.live ? data.game : null;
+permissions:
+  contents: write
 
-  document.querySelectorAll('[data-game]').forEach(card => {
-    const game = card.dataset.game;
-    const status = card.querySelector('[data-live-status]');
-    const isLive = Boolean(liveGame && liveGame === game);
+jobs:
+  update:
+    runs-on: ubuntu-latest
 
-    card.classList.toggle('is-live', isLive);
-    card.classList.toggle('is-not-live', !isLive);
+    steps:
+      - name: Baixar o site
+        uses: actions/checkout@v4
 
-    const stream = document.querySelector(`[data-stream-game="${game}"]`);
-    if (stream) stream.classList.toggle('is-current', isLive);
+      - name: Instalar yt-dlp
+        run: python -m pip install --upgrade yt-dlp
 
-    if (status) {
-      status.textContent = isLive ? '🔴 AO VIVO AGORA' : 'EM BREVE';
-      status.classList.toggle('is-live-status', isLive);
-    }
+      - name: Detectar live atual no YouTube
+        shell: bash
+        run: |
+          python <<'PY'
+          import json
+          import subprocess
+          import re
+          from datetime import datetime, timezone
 
-    card.setAttribute('aria-live-status', isLive ? 'online' : 'offline');
-    card.onclick = isLive ? () => window.open(YOUTUBE_LIVE_URL, '_blank', 'noopener') : null;
-    card.style.cursor = isLive ? 'pointer' : 'default';
-  });
+          channel_live = "https://www.youtube.com/@lmreicaryt/live"
 
-  const globalLiveStatus = document.getElementById('globalLiveStatus');
-  if (globalLiveStatus) {
-    const liveNow = Boolean(data?.live);
-    globalLiveStatus.textContent = liveNow ? '● AO VIVO' : '● OFFLINE';
-    globalLiveStatus.classList.toggle('live-now', liveNow);
-    globalLiveStatus.classList.toggle('offline-now', !liveNow);
-  }
+          result = {
+              "updatedAt": datetime.now(timezone.utc).isoformat(),
+              "channel": "https://www.youtube.com/@lmreicaryt",
+              "live": False,
+              "game": None,
+              "title": None,
+              "videoId": None
+          }
 
-  const liveNotice = document.querySelector('[data-live-notice]');
-  const liveTitle = document.querySelector('[data-live-title]');
-  if (liveNotice) {
-    liveNotice.classList.toggle('show', Boolean(data?.live));
-    liveNotice.setAttribute('aria-hidden', data?.live ? 'false' : 'true');
-  }
-  if (liveTitle) {
-    liveTitle.textContent = data?.live && data.title ? data.title : 'Nenhuma live acontecendo agora';
-  }
-}
+          def run(cmd):
+              p = subprocess.run(
+                  cmd,
+                  text=True,
+                  capture_output=True
+              )
+              return p.returncode, p.stdout, p.stderr
 
-async function fetchLiveStatus() {
-  try {
-    const response = await fetch(LIVE_STATUS_URL, { cache: 'no-store' });
-    if (!response.ok) throw new Error('Não foi possível carregar o status.');
-    const data = await response.json();
-    updateLiveGameStatus(data);
-  } catch (error) {
-    console.warn('Status automático indisponível:', error);
-    updateLiveGameStatus(FALLBACK_STATUS);
-  }
-}
+          code, out, err = run([
+              "yt-dlp",
+              "--flat-playlist",
+              "--playlist-items", "1",
+              "--print", "%(id)s|%(title)s",
+              channel_live
+          ])
 
-fetchLiveStatus();
-setInterval(fetchLiveStatus, 60000);
+          if code == 0 and out.strip():
+              first = out.strip().splitlines()[0]
+              parts = first.split("|", 1)
 
-// LM & PANDA - Pix QR Code
-const supportBtn = document.getElementById("supportBtn");
-const pixModal = document.getElementById("pixModal");
-const closePix = document.getElementById("closePix");
-const copyPix = document.getElementById("copyPix");
-const pixKey = "cl284598@gmail.com";
+              video_id = parts[0].strip()
+              fallback_title = parts[1].strip() if len(parts) > 1 else ""
 
-supportBtn?.addEventListener("click", () => pixModal?.classList.add("show"));
-closePix?.addEventListener("click", () => pixModal?.classList.remove("show"));
-pixModal?.addEventListener("click", e => { if (e.target === pixModal) pixModal.classList.remove("show"); });
-copyPix?.addEventListener("click", async () => {
-  try { await navigator.clipboard.writeText(pixKey); copyPix.textContent = "CHAVE COPIADA ✓"; }
-  catch { copyPix.textContent = pixKey; }
-  setTimeout(() => copyPix.textContent = "COPIAR CHAVE PIX", 1800);
-});
+              code2, raw, _ = run([
+                  "yt-dlp",
+                  "-J",
+                  "--skip-download",
+                  f"https://www.youtube.com/watch?v={video_id}"
+              ])
 
-const observer = new IntersectionObserver((entries) => {
-  entries.forEach(entry => { if (entry.isIntersecting) entry.target.classList.add("visible"); });
-}, { threshold: 0.12 });
-document.querySelectorAll(".section, .support, .next-live").forEach(el => {
-  el.style.opacity = "0"; el.style.transform = "translateY(24px)"; el.style.transition = "opacity .7s ease, transform .7s ease"; observer.observe(el);
-});
-const style = document.createElement("style");
-style.textContent = `.section.visible,.support.visible,.next-live.visible{opacity:1!important;transform:translateY(0)!important}`;
-document.head.appendChild(style);
+              if code2 == 0 and raw.strip():
+                  try:
+                      info = json.loads(raw)
+
+                      live_status = str(
+                          info.get("live_status") or ""
+                      ).lower()
+
+                      is_live = (
+                          live_status == "is_live"
+                          or bool(info.get("is_live"))
+                      )
+
+                      title = info.get("title") or fallback_title
+
+                      result["live"] = is_live
+                      result["title"] = title
+                      result["videoId"] = video_id if is_live else None
+
+                      if is_live:
+                          categories = " ".join(
+                              info.get("categories") or []
+                          )
+
+                          tags = " ".join(
+                              info.get("tags") or []
+                          )
+
+                          text = (
+                              title + " " +
+                              categories + " " +
+                              tags
+                          ).lower()
+
+                          if re.search(
+                              r"\b(roblox|blox fruits|brookhaven|murder mystery|doors|bedwars)\b",
+                              text
+                          ):
+                              result["game"] = "roblox"
+
+                          elif re.search(
+                              r"\b(efootball|e-football|efootball 2026|pes 2026|pes)\b",
+                              text
+                          ):
+                              result["game"] = "efootball"
+
+                          elif re.search(
+                              r"\b(valorant|valorant competitivo|valorant ranked)\b",
+                              text
+                          ):
+                              result["game"] = "valorant"
+
+                          elif re.search(
+                              r"\b(fivem|five m|gta rp|gta roleplay|roleplay|cidade)\b",
+                              text
+                          ):
+                              result["game"] = "fivem"
+
+                  except Exception as error:
+                      print("Erro ao interpretar dados:", error)
+
+          with open(
+              "live-status.json",
+              "w",
+              encoding="utf-8"
+          ) as f:
+              json.dump(
+                  result,
+                  f,
+                  ensure_ascii=False,
+                  indent=2
+              )
+
+          print(
+              json.dumps(
+                  result,
+                  ensure_ascii=False
+              )
+          )
+          PY
+
+      - name: Publicar novo status
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add live-status.json
+
+          if git diff --cached --quiet; then
+            echo "Nenhuma alteração no status."
+            exit 0
+          fi
+
+          git commit -m "Atualizar status da live"
+          git push
